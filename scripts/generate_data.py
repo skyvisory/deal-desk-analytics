@@ -52,12 +52,24 @@ for i in range(1, N_DEALS + 1):
     rep_id = np.random.choice(rep_ids)
     arr_min, arr_max = segment_arr[segment]
     list_price = np.random.randint(arr_min, arr_max)
+    deal_type = np.random.choice(DEAL_TYPES, p=[0.50, 0.30, 0.20])
+    product = np.random.choice(PRODUCTS, p=[0.40, 0.35, 0.25])
 
-    # Discount: blend segment norm + rep bias
+    # Deal type discount adjustment
+    deal_type_discount_adj = {
+        'New Business': 0.00,
+        'Expansion':   -0.02,
+        'Renewal':     -0.04
+    }[deal_type]
+
+    # Discount: blend segment norm + rep bias + deal type
     base_discount = segment_discount_mean[segment]
     rep_bias = rep_discount_bias[rep_id]
     discount_pct = np.clip(
-        np.random.normal(loc=(base_discount + rep_bias) / 2, scale=0.05),
+        np.random.normal(
+            loc=(base_discount + rep_bias) / 2 + deal_type_discount_adj,
+            scale=0.05
+        ),
         0.0, 0.50
     )
 
@@ -69,15 +81,16 @@ for i in range(1, N_DEALS + 1):
         'arr':          list_price,
         'list_price':   list_price,
         'discount_pct': round(discount_pct, 4),
-        'deal_type':    np.random.choice(DEAL_TYPES, p=[0.50, 0.30, 0.20]),
-        'product':      np.random.choice(PRODUCTS, p=[0.40, 0.35, 0.25]),
-        'created_date': (start_date + timedelta(days=np.random.randint(0, 365))).date()
+        'deal_type':    deal_type,
+        'product':      product,
+        'created_date': (
+            start_date + timedelta(days=np.random.randint(0, 365))
+        ).date()
     })
 
 deals_df = pd.DataFrame(deals)
 
 # --- Generate approvals ---
-# Deals with discount > threshold go to approval
 thresholds = {'SMB': 0.10, 'Mid-Market': 0.15, 'Enterprise': 0.20}
 deals_df['threshold'] = deals_df['segment'].map(thresholds)
 deals_df['needs_approval'] = deals_df['discount_pct'] > deals_df['threshold']
@@ -86,15 +99,17 @@ approvals = []
 approval_id = 1
 
 for _, deal in deals_df[deals_df['needs_approval']].iterrows():
-    submitted_date = deal['created_date'] + timedelta(days=np.random.randint(1, 5))
+    submitted_date = deal['created_date'] + timedelta(
+        days=np.random.randint(1, 5)
+    )
 
-    # Cycle time: Enterprise slower
     base_days = {'SMB': 2, 'Mid-Market': 4, 'Enterprise': 8}[deal['segment']]
     cycle_days = max(1, int(np.random.normal(base_days, base_days * 0.4)))
     decision_date = submitted_date + timedelta(days=cycle_days)
 
-    # Approval likelihood: higher discount = more likely rejected
-    reject_prob = np.clip((deal['discount_pct'] - deal['threshold']) * 3, 0.05, 0.60)
+    reject_prob = np.clip(
+        (deal['discount_pct'] - deal['threshold']) * 3, 0.05, 0.60
+    )
     status = np.random.choice(
         ['Approved', 'Rejected', 'Pending'],
         p=[1 - reject_prob - 0.05, reject_prob, 0.05]
@@ -123,9 +138,18 @@ outcomes = []
 
 for _, deal in deals_df.iterrows():
     # Base win rate by segment
-    base_win = {'SMB': 0.55, 'Mid-Market': 0.45, 'Enterprise': 0.35}[deal['segment']]
+    base_win = {
+        'SMB': 0.55, 'Mid-Market': 0.45, 'Enterprise': 0.35
+    }[deal['segment']]
 
-    # Discount elasticity: moderate discount helps, deep discount doesn't
+    # Deal type adjustment
+    deal_type_adj = {
+        'New Business': 0.00,
+        'Expansion':    0.15,
+        'Renewal':      0.25
+    }[deal['deal_type']]
+
+    # Discount elasticity
     discount = deal['discount_pct']
     if discount < 0.05:
         win_adj = -0.05
@@ -134,13 +158,21 @@ for _, deal in deals_df.iterrows():
     elif discount < 0.25:
         win_adj = 0.0
     else:
-        win_adj = -0.10  # over-discounting hurts
+        win_adj = -0.10
 
-    win_prob = np.clip(base_win + win_adj + np.random.normal(0, 0.05), 0.05, 0.95)
+    win_prob = np.clip(
+        base_win + deal_type_adj + win_adj + np.random.normal(0, 0.05),
+        0.05, 0.95
+    )
     win_flag = int(np.random.random() < win_prob)
 
-    close_date = deal['created_date'] + timedelta(days=np.random.randint(14, 120))
-    final_arr = round(deal['list_price'] * (1 - deal['discount_pct']), 2) if win_flag else 0.0
+    close_date = deal['created_date'] + timedelta(
+        days=np.random.randint(14, 120)
+    )
+    final_arr = (
+        round(deal['list_price'] * (1 - deal['discount_pct']), 2)
+        if win_flag else 0.0
+    )
 
     outcomes.append({
         'deal_id':    deal['deal_id'],
@@ -152,7 +184,7 @@ for _, deal in deals_df.iterrows():
 
 outcomes_df = pd.DataFrame(outcomes)
 
-# --- Clean up helper col ---
+# --- Clean up helper cols ---
 deals_df = deals_df.drop(columns=['threshold', 'needs_approval'])
 
 # --- Save ---
@@ -165,4 +197,7 @@ print(f"deals:     {len(deals_df):,} rows")
 print(f"approvals: {len(approvals_df):,} rows")
 print(f"outcomes:  {len(outcomes_df):,} rows")
 print(f"\nOver-discounting reps: {rep_ids[:5]}")
-print(f"\nDiscount needing approval: {deals_df['discount_pct'].gt(deals_df.apply(lambda r: thresholds[r['segment']], axis=1)).sum():,} deals")
+print(
+    f"\nDeals needing approval: "
+    f"{deals_df['discount_pct'].gt(deals_df.apply(lambda r: thresholds[r['segment']], axis=1)).sum():,}"
+)
